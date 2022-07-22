@@ -7,7 +7,20 @@ import os
 from sklearn.model_selection import train_test_split
 from tensorflow.keras.utils import Sequence
 from config import yolo_config
+import random
 
+def noisy(image):
+        row,col,ch = image.shape
+        s_vs_p = 0.5
+        amount = 0.004
+        out = np.copy(image)
+        # Salt mode
+        num_salt = np.ceil(amount * image.size * s_vs_p)
+        coords = [np.random.randint(0, i - 1, int(num_salt))
+              for i in image.shape]
+        out[coords] = 1
+
+        return noisy
 
 def load_weights(model, weights_file_path):
     conv_layer_size = 110
@@ -128,7 +141,9 @@ class DataGenerator(Sequence):
                  class_name_path,
                  folder_path,
                  max_boxes=100,
-                 shuffle=True):
+                 shuffle=True,
+                 gray=False,
+                 noise=False):
         self.annotation_lines = annotation_lines
         self.class_name_path = class_name_path
         self.num_classes = len([line.strip() for line in open(class_name_path).readlines()])
@@ -140,6 +155,8 @@ class DataGenerator(Sequence):
         self.indexes = np.arange(len(self.annotation_lines))
         self.folder_path = folder_path
         self.max_boxes = max_boxes
+        self.gray = gray
+        self.noise = noise
         self.on_epoch_end()
 
     def __len__(self):
@@ -186,8 +203,18 @@ class DataGenerator(Sequence):
 
     def get_data(self, annotation_line):
         line = annotation_line.split()
-        img_path = line[0]
+        img_path = line[0]     
         img = cv2.imread(os.path.join(self.folder_path, img_path))[:, :, ::-1]
+        
+        if self.gray and random.choice([True, False]):
+            img_gray = img @ [0.2989, 0.5870, 0.1140]
+            img[..., 0] = img_gray           
+            img[..., 1] = img_gray
+            img[..., 2] = img_gray
+           
+        if self.noise and random.choice([True, False]):
+            img = noisy(img)
+
         ih, iw = img.shape[:2]
         h, w, c = self.target_img_size
         boxes = np.array([np.array(list(map(float, box.split(',')))) for box in line[1:]], dtype=np.float32) # x1y1x2y2
