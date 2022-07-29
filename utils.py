@@ -20,7 +20,7 @@ def noisy(image):
               for i in image.shape]
         out[coords] = 1
 
-        return noisy
+        return out
 
 def load_weights(model, weights_file_path):
     conv_layer_size = 110
@@ -66,7 +66,7 @@ def load_weights(model, weights_file_path):
             print(f'failed to read  all weights, # of unread weights: {len(file.read())}')
 
 
-def get_detection_data(img, model_outputs, class_names):
+def get_detection_data(img, model_outputs, class_names, show_box_count=True):
     """
 
     :param img: target raw image
@@ -87,7 +87,8 @@ def get_detection_data(img, model_outputs, class_names):
     df['w'] = df['x2'] - df['x1']
     df['h'] = df['y2'] - df['y1']
 
-    print(f'# of bboxes: {num_bboxes}')
+    if show_box_count:
+        print(f'# of bboxes: {num_bboxes}')
     return df
 
 def read_annotation_lines(annotation_path, test_size=None, random_seed=5566):
@@ -500,3 +501,117 @@ def read_txt_to_list(path):
     # remove whitespace characters like `\n` at the end of each line
     content = [x.strip() for x in content]
     return content
+
+
+def visualize_bbox(image, bbox, class_name, color=(200, 0, 0), thickness=2):
+    bbox = bbox.astype(int)
+    x_min = bbox[0]
+    y_min = bbox[1]
+    x_max = bbox[2]  
+    y_max = bbox[3]  
+   
+    cv2.rectangle(image, (x_min, y_min), (x_max, y_max), color=color, thickness=thickness)
+    ((text_width, text_height), _) = cv2.getTextSize(class_name, cv2.FONT_HERSHEY_SIMPLEX, 1, 2)    
+    cv2.rectangle(image, (x_min, y_min - int(1.3 * text_height)), (x_min + text_width, y_min), color, -1)
+    cv2.putText(
+        image,
+        text=class_name,
+        org=(x_min, y_min - int(0.3 * text_height)),
+        fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+        fontScale=1, 
+        color=(255, 255, 255), 
+        lineType=cv2.LINE_AA,
+        thickness=2,
+    )
+    return image
+
+
+def visualize(image, bboxes, category_names):
+    img = image.copy()
+    for bbox, category_name in zip(bboxes, category_names):
+        class_name = category_name
+        img = visualize_bbox(img, bbox, class_name)
+    return img
+
+
+def search_save_in_video(video_path, save_path, model):
+    find_bboxes = 0
+
+    vid = cv2.VideoCapture(video_path)
+
+    if vid.isOpened() == False:
+        print ('Can\'t open the video (%d)' % (video_path))
+        exit()
+
+    # cv2.namedWindow('result')
+    
+    #재생할 파일의 넓이 얻기
+    width = vid.get(cv2.CAP_PROP_FRAME_WIDTH)
+    #재생할 파일의 높이 얻기
+    height = vid.get(cv2.CAP_PROP_FRAME_HEIGHT)
+    #재생할 파일의 프레임 레이트 얻기
+    fps = vid.get(cv2.CAP_PROP_FPS)
+
+    # print('width {0}, height {1}, fps {2}'.format(width, height, fps))
+
+    #XVID가 제일 낫다고 함.
+    #linux 계열 DIVX, XVID, MJPG, X264, WMV1, WMV2.
+    #windows 계열 DIVX
+    #저장할 비디오 코덱
+    fourcc = cv2.VideoWriter_fourcc(*'DIVX')
+    
+    #파일 stream 생성
+    out = cv2.VideoWriter(save_path, fourcc, fps, (int(width), int(height)))
+
+    if not out.isOpened():
+        print('File open failed!')
+        vid.release()
+        exit()
+    
+    while(True):
+        #파일로 부터 이미지 얻기
+        ret, frame = vid.read()
+        #더 이상 이미지가 없으면 종료
+        #재생 다 됨
+        if frame is None:
+            break
+        
+        # 5프레임 마다 image predict
+        if (int(vid.get(cv2.CAP_PROP_POS_FRAMES) % 5)) == 0:
+            # image predict
+            bboxes_df = model.predict_img(frame, random_color=True, plot_img=False, show_text=True, return_output=False, show_shape=False, show_box_count=False)
+            # class name
+            class_ids = bboxes_df['class_name']
+            # bbox : x_center, y_center, w, h
+            bboxes = np.zeros((len(class_ids), 4))
+            bboxes[:, 0] = bboxes_df['x1']
+            bboxes[:, 1] = bboxes_df['y1']
+            bboxes[:, 2] = bboxes_df['x2']
+            bboxes[:, 3] = bboxes_df['y2']
+
+            if len(bboxes) > 0:
+                bboxes[:, [0,2]] *= (width/416)
+                bboxes[:, [1,3]] *= (height/416)
+                find_bboxes = 4
+                result = visualize(frame, bboxes, class_ids)
+            else:
+                result = frame
+                
+        # bbox 를 찾으면 4프레임동안 bbox 표시
+        elif find_bboxes > 0:
+            result = visualize(frame, bboxes, class_ids)
+            find_bboxes -= 1
+        else:
+            result = frame
+
+        # text= f"{(time() - since)*1000:.0f}ms/image"
+        # cv2.putText(result, text, (20, 40), cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 255), 2)
+        # cv2.imshow('result', result)
+
+        # 인식된 이미지 파일로 저장
+        out.write(result)
+
+    #재생 파일 종료
+    vid.release()
+    #저장 파일 종료
+    out.release()

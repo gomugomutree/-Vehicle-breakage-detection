@@ -2,6 +2,7 @@ import numpy as np
 import cv2
 import os
 import json
+from time import time
 from tqdm import tqdm
 from glob import glob
 import matplotlib.pyplot as plt
@@ -9,7 +10,7 @@ import tensorflow as tf
 from tensorflow.keras import layers, models, optimizers
 
 from custom_layers import yolov4_neck, yolov4_head, nms
-from utils import load_weights, get_detection_data, draw_bbox, voc_ap, draw_plot_func, read_txt_to_list
+from utils import load_weights, get_detection_data, draw_bbox, voc_ap, draw_plot_func, read_txt_to_list, visualize
 from config import yolo_config
 from loss import yolo_loss
 
@@ -72,7 +73,7 @@ class Yolov4(object):
                                                 iou_threshold=self.config['iou_threshold'],
                                                 score_threshold=self.config['score_threshold']))
 
-        if load_pretrained and self.weight_path and self.weight_path.endswith('.weights'):
+        if load_pretrained and self.weight_path: # and self.weight_path.endswith('.weights'):
             if self.weight_path.endswith('.weights'):
                 load_weights(self.yolo_model, self.weight_path)
                 print(f'load from {self.weight_path}')
@@ -80,7 +81,7 @@ class Yolov4(object):
                 self.training_model.load_weights(self.weight_path)
                 print(f'load from {self.weight_path}')
 
-        self.training_model.compile(optimizer=optimizers.Adam(lr=1e-3),
+        self.training_model.compile(optimizer=optimizers.Adam(learning_rate=1e-4),
                                     loss={'yolo_loss': lambda y_true, y_pred: y_pred})
 
     def load_model(self, path):
@@ -106,14 +107,16 @@ class Yolov4(object):
                                 callbacks=callbacks,
                                 initial_epoch=initial_epoch)
     # raw_img: RGB
-    def predict_img(self, raw_img, random_color=True, plot_img=True, figsize=(10, 10), show_text=True, return_output=False):
-        print('img shape: ', raw_img.shape)
+    def predict_img(self, raw_img, random_color=True, plot_img=True, figsize=(10, 10), show_text=True, return_output=False, show_shape=True, show_box_count=True):
+        if show_shape:
+            print('img shape: ', raw_img.shape)
         img = self.preprocess_img(raw_img)
         imgs = np.expand_dims(img, axis=0)
         pred_output = self.inference_model.predict(imgs)
         detections = get_detection_data(img=raw_img,
                                         model_outputs=pred_output,
-                                        class_names=self.class_names)
+                                        class_names=self.class_names,
+                                        show_box_count=show_box_count)                                    
 
         output_img = draw_bbox(raw_img, detections, cmap=self.class_color, random_color=random_color, figsize=figsize,
                   show_text=show_text, show_img=plot_img)
@@ -528,3 +531,45 @@ class Yolov4(object):
         draw_bbox(raw_img, detections, cmap=self.class_color, random_color=True)
         return detections
 
+    def search_in_video(self, video_path):
+        vid = cv2.VideoCapture(video_path)
+        while (vid.isOpened()):
+            ret, frame = vid.read()
+            if ret:
+                since = time()
+                ori_h, ori_w = frame.shape[:2]
+                
+                bboxes_df = self.predict_img(frame, random_color=True, plot_img=False, show_text=True, return_output=False, show_shape=False, show_box_count=False)
+                # class name
+                class_ids = bboxes_df['class_name']
+                
+
+                # bbox x_center, y_center, w, h
+                bboxes = np.zeros((len(class_ids), 4))
+                bboxes[:, 0] = bboxes_df['x1']
+                bboxes[:, 1] = bboxes_df['y1']
+                bboxes[:, 2] = bboxes_df['x2']
+                bboxes[:, 3] = bboxes_df['y2']
+
+                text= f"{(time() - since)*1000:.0f}ms/image"
+                
+                if len(bboxes) > 0:
+                    bboxes[:, [0,2]] *= (ori_w/self.img_size[0])
+                    bboxes[:, [1,3]] *= (ori_h/self.img_size[1])
+                    # bboxes[:, 2].clip(min=0, max=ori_w)
+                    # bboxes[:, 3].clip(min=0, max=ori_h)
+                    result = visualize(frame, bboxes, class_ids)
+                else:
+                    result = frame
+                    
+                cv2.putText(result, text, (20, 40), cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 255), 2)
+                cv2.imshow('camera', result)
+                
+                key = cv2.waitKey(1)
+                if key == 27:
+                    break
+                if key == ord('s'):
+                    cv2.waitKey()
+            
+        vid.release()
+        cv2.destroyAllWindows()
